@@ -1,0 +1,105 @@
+配置vsftpd的遇到的坑及搭建虚拟账户
+vsftpd是Very secure FTP 的简写，是一款非常安全的FTP软件。支持IPV6及SSL加密。
+vsftpd特性：
+
+安全，高速，稳定
+基于IP的虚拟FTP服务器
+支持虚拟用户
+支持PAM或者xinetd/tcp_wrappers的认证方式
+支持每个虚拟用户具有独立的配置
+支持带宽限制
+常见的报错及解决方法
+开启了anon_upload_enable=YES匿名用户可以上传文档，为什么总是还是提示553 Could not create file.不能上传文档？
+解决方法：权限控制是基于vsftpd的配置文件和Linux的文件目录权限两方面的交集。匿名用户默认是映射成ftp用户来登陆的，所以并不具有对属于root目录的写权限。所以在/var/ftp新建一个上传目录mkdir upload;setfacl -m u:ftp:rwt upload;或者直接setfacl -m u:ftp:rwx pub一般不建议这样。
+匿名用户不可以删除自己上传的文档怎么办：
+在配置文档里添加：anon_other_write_enable=YES
+重启或者重新加载时报错：Job for vsftpd.service failed because the control process exited with error code. See "systemctl status vsftpd.service" and "journalctl -xe" for details.
+配置文件中：listen_ipv6=YES和listen=YES这两个不能同时开启，只能开启其中一个。详情看配置文件上有解释。
+开启chroot_local_user=YES后使用本地用户访问，报错：500 OOPS: vsftpd: refusing to run with writable root inside chroot()
+这是由于vsftpd更新后加强了安全检查。如果某用户被限制在其家目录下，那么该用户的家目录不能再具有写权限，否则会报错。vsftpd-3.0（Centos7）才具有这种特性。vsftpd-2.2(Centos6)并不具有该属性。 解决办法：可以在主配置文件里添加allow_writeable_chroot=YES(推荐) 或者直接修改该用户的家目录chmod a-w /home/USER(修改后会带来相关的权限限制)
+详细说明chroot的相关选项：
+chroot_local_user=YES|NO
+
+chroot_list_enable=YES|NO
+
+chroot_list_file=/etc/vsftpd/chroot_list
+
+该选项的作用是禁锢ftp的本地用户于家目录之中。 但是限制和不限制哪些用户是相对于chroot\_local_user是否开启而言的。chroot_local_user和chroot_list_enable总是背道而驰。
+
+方式一： chroot_local_user=YES
+
+chroot_list_enable=YES
+
+chroot_list_file=/etc/vsftpd/chroot_list
+
+该方式表明/etc/vsftpd/chroot_list列表里的所有账号都被不会被限制在其家目录里面。列表以外的用户都被限制。
+
+方式二： chroot_local_user=NO
+
+chroot_list_enable=YES
+
+chroot_list_file=/etc/vsftpd/chroot_list
+
+该方式表明/etc/vsftpd/chroot_list列表里的所有用户都被限制在其家目录里面，但是该列表以外的用户都不被限制在它们的家目录里面。详细理解自己试验。
+配置虚拟账号的方法（Centos7）：
+使用文件来储存虚拟账户：
+
+安装db4-utils工具来创建数据库文件
+
+# yum -y install libdb-utils
+
+#奇数行为账号，偶数行为上面一个账号的密码
+# vim /etc/vsftpd/virtual_user
+tom
+12345
+jerry
+67890
+# db_load -T -t hash -f /etc/vsftpd/virtual_user /etc/vsftpd/virtual_user.db
+创建pam文件，设置基于虚拟用户验证
+
+# vim /etc/pam.d/vsftpd.pam 
+auth required /lib64/security/pam_userdb.so  db=/etc/vsftpd/virtual_user
+account required /lib64/security/pam_userdb.so  db=/etc/vsftpd/virtual_user
+设置虚拟账户及共享目录
+
+# useradd -s /sbin/nologin -d /home/ftp virtual
+修改主配置文件（只需添加或修改列出的内容其他的不用修改）
+
+# vim /etc/vsftpd/vsftpd.conf
+anonymous_enable=NO
+pam_service_name=vsftpd.pam
+userlist_enable=YES
+tcp_wrappers=YES
+guest_enable=YES
+guest_username=virtual
+allow_writeable_chroot=YES
+ser_config_dir=/etc/vsftpd/virtual_user_conf
+user_sub_token=$USER
+为每个账号设置单独的路径和权限：
+
+# mkdir /etc/vsftpd/virtual_user_conf
+# touch /etc/vsftpd/virtual_user_conf/{tom,jerry}
+
+#设置tom只能上传文档
+# vim /etc/vsftpd/virtual_user_conf/tom 
+local_root=/home/ftp/$USER
+anon_mkdir_write_enable=NO
+anon_other_write_enable=NO
+anon_upload_enable=YES
+
+
+#设置Jerry可以上传，下载和删除文件
+# vim /etc/vsftpd/virtual_user_conf/jerry 
+local_root=/home/ftp/$USER
+anon_mkdir_write_enable=YES
+anon_other_write_enable=YES
+anon_upload_enable=YES
+
+#修改权限
+# mkdir /home/ftp/{tom,jerry}
+# chown virtual:virtual tom/
+# chown virtual:virtual jerry/
+重启服务并验证
+
+# systemctl restart vsftpd
+经过验证确实可行。由于篇幅有限我就不把实验验证结果贴出来了。本过程还可以做限制得更严格，比如：带宽，并发量等，自行添加。这里可以使用一款开源的客户端FTP软件FileZilla可以点击下载。
